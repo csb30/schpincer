@@ -6,6 +6,7 @@ import time
 import datetime
 import ssl
 import sqlite3
+import os
 from email.message import EmailMessage
 
 try:
@@ -21,7 +22,7 @@ API_URL = "https://schpincer.sch.bme.hu/api/items"
 POLL_INTERVAL_SECONDS = 600
 
 # A .txt fájl helyett az adatbázist használjuk (ÚJ)
-DATABASE_FILE = "pincer_monitor.db"
+DATABASE_FILE = os.getenv("DATABASE_PATH", "pincer_monitor.db")
 
 notified_circles = set()
 

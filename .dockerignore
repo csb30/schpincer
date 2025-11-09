@@ -1,0 +1,6 @@
+.git
+.idea/
+.env
+__pycache__/
+*.pyc
+pincer_monitor.db

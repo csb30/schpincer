@@ -1,0 +1,15 @@
+services:
+  monitor-app:
+    build: .
+    container_name: schpincer-monitor
+    
+    restart: unless-stopped
+    
+    env_file:
+      - .env
+      
+    volumes:
+      - db_data:/app/db
+
+volumes:
+  db_data:
