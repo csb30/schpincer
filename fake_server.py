@@ -58,4 +58,4 @@ if __name__ == '__main__':
     print("\nCtrl+C-vel állíthatod le a szervert.")
 
     # A szerver futtatása a localhost:5000 porton
-    app.run(host='127.0.0.1', port=5000)
+    app.run(host='192.168.1.155', port=5000)

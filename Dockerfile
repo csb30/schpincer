@@ -1,6 +1,8 @@
 # 1. Használjunk egy karcsú, hivatalos Python alapképet
 FROM python:3.10-slim-buster
 
+ENV PYTHONUNBUFFERED=1
+
 # 2. Beállítjuk a munkakönyvtárat a konténeren belül
 WORKDIR /app
 

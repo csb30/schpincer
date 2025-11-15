@@ -7,19 +7,27 @@ import datetime
 import ssl
 import sqlite3
 import os
+import logging
+import sys
 from email.message import EmailMessage
 
 try:
     import config
 except ImportError:
-    print("Hiba: Nem található a 'config.py' fájl.")
-    print("Kérlek, hozd létre a config.py fájlt az SMTP beállításokkal.")
-    exit()
+    sys.exit("Hiba: Nem található a 'config.py' fájl.")
+
+logging.basicConfig(
+    level=logging.INFO, # Beállítjuk, hogy az INFO szinttől felfelé mindent írjon ki
+    format='%(asctime)s - %(levelname)s - %(message)s', # Időbélyeg - Szint - Üzenet
+    handlers=[
+        logging.StreamHandler(sys.stdout) # A kimenetet a szabványos kimenetre irányítjuk (ezt látja a Docker)
+    ]
+)
 
 # --- Alap Beállítások ---
-API_URL = "https://schpincer.sch.bme.hu/api/items"
-#API_URL = "http://127.0.0.1:5000/api/items" # Teszteléshez
-POLL_INTERVAL_SECONDS = 600
+#API_URL = "https://schpincer.sch.bme.hu/api/items"
+API_URL = "http://192.168.1.155:5000/api/items"# Teszteléshez
+POLL_INTERVAL_SECONDS = 10
 
 # A .txt fájl helyett az adatbázist használjuk (ÚJ)
 DATABASE_FILE = os.getenv("DATABASE_PATH", "pincer_monitor.db")
@@ -37,7 +45,7 @@ def format_opening_date(timestamp_ms):
         dt_object = datetime.datetime.fromtimestamp(timestamp_sec)
         return dt_object.strftime("%Y-%m-%d %H:%M:%S")
     except Exception as e:
-        print(f"Hiba a dátum formázása közben: {e}")
+        logging.error(f"Hiba a dátum formázása közben: {e}")
         return str(timestamp_ms)
 
 
@@ -62,10 +70,9 @@ def get_recipients():
         recipients_list = [row[0] for row in rows]
 
     except sqlite3.OperationalError as e:
-        print(f"ADATBÁZIS HIBA: {e}")
-        print(f"Ellenőrizd, hogy a '{DATABASE_FILE}' létezik-e, és lefuttattad-e a 'db_setup.py'-t.")
+        logging.error(f"ADATBÁZIS HIBA: {e}")
     except sqlite3.Error as e:
-        print(f"Hiba az adatbázis olvasása közben: {e}")
+        logging.error(f"Hiba az adatbázis olvasása közben: {e}")
     finally:
         # Mindig bezárjuk a kapcsolatot
         if conn:
@@ -78,17 +85,19 @@ def send_notification_email(circle_name, opening_date_str):
     """
     E-mailt küld a configban megadott címzetteknek.
     """
-    if not config.RECIPIENT_EMAILS:
-        print(f"Nincsenek címzettek beállítva a config.py-ban a(z) {circle_name} értesítéshez.")
+    recipients_list = get_recipients()
+
+    if not recipients_list:
+        logging.warning(f"Nincsenek címzettek az adatbázisban a(z) {circle_name} értesítéshez.")
         return
 
-    print(f"E-mail küldése indul: {circle_name} megnyílt...")
+    logging.info(f"E-mail küldése indul ({len(recipients_list)} címzettnek): {circle_name} megnyílt...")
 
     # Az e-mail üzenet összeállítása
     msg = EmailMessage()
     msg['Subject'] = f"SCH Pincér Értesítő: A(z) {circle_name} megnyílt!"
     msg['From'] = config.EMAIL_SENDER
-    msg['To'] = ", ".join(config.RECIPIENT_EMAILS) # Címzettek listája vesszővel elválasztva
+    msg['To'] = ", ".join(recipients_list) # Címzettek listája vesszővel elválasztva
 
     # Az üzenet törzse
     msg.set_content(
@@ -113,11 +122,11 @@ A Te Python Botod
             server.ehlo()  # Kapcsolat tesztelése
             server.login(config.EMAIL_SENDER, config.EMAIL_PASSWORD)
             server.send_message(msg)
-            print(f"E-mail sikeresen elküldve a(z) {circle_name} nyitásáról.")
+            logging.info(f"E-mail SIKERESEN elküldve: {circle_name}")
     except smtplib.SMTPException as e:
-        print(f"Hiba az e-mail küldése közben: {e}")
+        logging.error(f"SMTP Hiba az e-mail küldése közben: {e}")
     except Exception as e:
-        print(f"Ismeretlen hiba az e-mail küldés során: {e}")
+        logging.error(f"Ismeretlen hiba az e-mail küldés során: {e}")
 
 
 def check_for_openings():
@@ -126,14 +135,13 @@ def check_for_openings():
     (Ez a funkció nem változott)
     """
     global notified_circles
-    print(f"({datetime.datetime.now().strftime('%H:%M:%S')}) API ellenőrzése...")
 
     try:
         response = requests.get(API_URL, timeout=10)
         response.raise_for_status()
         items = response.json()
     except requests.exceptions.RequestException as e:
-        print(f"Hiba az API lekérdezése közben: {e}")
+        logging.error(f"Hiba az API lekérdezése közben: {e}")
         return
 
     currently_orderable_circles = set()
@@ -155,11 +163,42 @@ def check_for_openings():
         formatted_date = format_opening_date(opening_date_ms)
         send_notification_email(circle_name, formatted_date)
 
+    if closed_openings:
+        logging.info(f"Bezárt körök (értesítés resetelve): {', '.join(closed_openings)}")
+
     notified_circles.update(new_openings)
     notified_circles.difference_update(closed_openings)
 
-    if not new_openings and not closed_openings:
-        print("Nincs változás.")
+def db_setup():
+    conn = None
+    try:
+        # A connect létrehozza a fájlt, ha nem létezik
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+
+        # Létrehozzuk a táblát az e-mail címek tárolására
+        # A 'UNIQUE' biztosítja, hogy egy e-mail cím csak egyszer szerepelhessen
+        cursor.execute("""
+                CREATE TABLE IF NOT EXISTS recipients (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    email TEXT NOT NULL UNIQUE
+                )
+            """)
+
+        logging.info(f"Adatbázis ('{DATABASE_FILE}') és 'recipients' tábla sikeresen létrehozva/ellenőrizve.")
+
+        # --- Opcionális: Pár példa cím hozzáadása ---
+        # A 'OR IGNORE' miatt nem dob hibát, ha már létezik a cím
+        cursor.execute("INSERT OR IGNORE INTO recipients (email) VALUES (?)", ("pelda@pelda.com",))
+
+        conn.commit()  # Változtatások mentése
+        logging.info("Példa e-mail címek hozzáadva (ha még nem léteztek).")
+
+    except sqlite3.Error as e:
+        logging.error(f"Hiba történt az adatbázis beállítása közben: {e}")
+    finally:
+        if conn:
+            conn.close()
 
 
 # --- MÓDOSÍTOTT MAIN FUNKCIÓ ---
@@ -167,17 +206,18 @@ def main():
     """
     A fő programciklus, ami futtatja az ellenőrzést.
     """
-    print("SCH Pincér Monitor elindítva...")
-    # MÓDOSÍTÁS: Az üdvözlő üzenet frissítése
-    print(f"Címzettek a(z) '{DATABASE_FILE}' adatbázisból lesznek beolvasva.")
-    print(f"Ellenőrzési intervallum: {POLL_INTERVAL_SECONDS} másodperc")
-    print("--------------------------------------------------")
+    logging.info("Adatbázis ellenőrzése/létrehozása")
+    db_setup()
+
+    logging.info("SCH Pincér Monitor INDÍTÁSA...")
+    logging.info(f"Adatbázis: {DATABASE_FILE}")
+    logging.info(f"Intervallum: {POLL_INTERVAL_SECONDS} másodperc")
     try:
         while True:
             check_for_openings()
             time.sleep(POLL_INTERVAL_SECONDS)
     except KeyboardInterrupt:
-        print("\nProgram leállítva (Ctrl+C). Viszlát!")
+        logging.info("Program leállítva (Ctrl+C). Viszlát!")
 
 
 if __name__ == "__main__":
